@@ -12,6 +12,100 @@ const decamelize = string => string
 	// `APISection` → `API Section`. A lowercase `s` right after the acronym is a plural marker rather than the start of a new word, unless another lowercase letter follows it, so `APIs` is left alone while `APIUsage` is still separated.
 	.replaceAll(/(?<acronymHead>[A-Z])(?<rest>[A-Z](?!s(?![a-z]))[\da-z]+)/gv, '$<acronymHead> $<rest>');
 
+// Same guard as `@sindresorhus/transliterate`: a long combining-mark run makes `String#normalize` quadratic.
+const normalizeForReplacement = string => {
+	if (/\p{Mark}{101}/v.test(string)) {
+		throw new RangeError('Cannot normalize more than 100 consecutive combining marks');
+	}
+
+	return string.normalize();
+};
+
+// Replacements have to match transliterate's own pass: NFC keys, longer keys first, then `$&` / `$$` left intact.
+const applyCustomReplacements = (string, replacements) => {
+	const pairs = [...replacements].map(([key, value]) => [normalizeForReplacement(key), value]);
+	pairs.sort((left, right) => right[0].length - left[0].length);
+
+	string = normalizeForReplacement(string);
+
+	for (const [key, value] of pairs) {
+		// eslint-disable-next-line unicorn/no-unsafe-string-replacement
+		string = string.replaceAll(key, value);
+	}
+
+	return normalizeForReplacement(string);
+};
+
+// One stand-in per source letter, so `Ü` counts as a single capital and not as the two letters in `Ue`.
+const sourceLetterProxy = character => {
+	if (/^[\dA-Za-z]$/v.test(character) || !/\p{Letter}/v.test(character)) {
+		return character;
+	}
+
+	const upper = character.toUpperCase();
+	const lower = character.toLowerCase();
+
+	if (character === upper && character !== lower) {
+		return 'A';
+	}
+
+	return character === lower && character !== upper ? 'a' : character;
+};
+
+// `Ü` → `Ue` and `Æ` → `AE` are still one letter. Decamelizing the expansion splits `MUeNCHEN` and `AEgir`.
+const decamelizeTransliterated = (string, locale) => {
+	// ASCII does not grow a new case boundary under transliteration.
+	if (!/\P{ASCII}/v.test(string)) {
+		return decamelize(string);
+	}
+
+	const transliterated = transliterate(string, {locale});
+	const characters = [...string];
+	const cache = new Map();
+	const segments = characters.map(character => {
+		let segment = cache.get(character);
+
+		if (segment === undefined) {
+			segment = transliterate(character, {locale});
+			cache.set(character, segment);
+		}
+
+		return segment;
+	});
+
+	// Whole-word locale rules and multi-character keys are not a per-letter map. Keep decamelizing the finished ASCII.
+	if (segments.join('') !== transliterated) {
+		return decamelize(transliterated);
+	}
+
+	const pieces = [];
+
+	for (const [index, character] of characters.entries()) {
+		// A source letter that disappears (`ь` → '') lets its neighbors meet, as they do in the output.
+		if (segments[index] === '') {
+			continue;
+		}
+
+		pieces.push([sourceLetterProxy(character), segments[index]]);
+	}
+
+	const decamelized = [...decamelize(pieces.map(([proxy]) => proxy).join(''))];
+	let proxyIndex = 0;
+	let result = '';
+
+	for (const [proxy, segment] of pieces) {
+		while (proxyIndex < decamelized.length && decamelized[proxyIndex] !== proxy) {
+			result += decamelized[proxyIndex];
+			proxyIndex++;
+		}
+
+		result += segment;
+		proxyIndex++;
+	}
+
+	return result;
+};
+
 const removeMootSeparators = (string, separator) => {
 	const escapedSeparator = escapeStringRegexp(separator);
 
@@ -83,7 +177,11 @@ export default function slugify(string, options) {
 			...options.customReplacements,
 		]);
 
-		string = transliterate(string, {customReplacements, locale: options.locale});
+		// Replacements stay ahead of decamelize. The decamelize step then uses each source letter's case, not the case inside `Ü` → `Ue` or `Æ` → `AE`.
+		string = applyCustomReplacements(string, customReplacements);
+		string = options.decamelize
+			? decamelizeTransliterated(string, options.locale)
+			: transliterate(string, {locale: options.locale});
 	} else {
 		// Apply custom replacements even when transliteration is disabled
 		for (const [key, value] of options.customReplacements) {
@@ -91,10 +189,10 @@ export default function slugify(string, options) {
 			// eslint-disable-next-line unicorn/no-unsafe-string-replacement
 			string = string.replaceAll(key, value);
 		}
-	}
 
-	if (options.decamelize) {
-		string = decamelize(string);
+		if (options.decamelize) {
+			string = decamelize(string);
+		}
 	}
 
 	const patternSlug = buildPatternSlug(options);

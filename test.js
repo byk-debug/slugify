@@ -203,6 +203,55 @@ test('supports German umlauts', () => {
 	assert.equal(slugify('ä ö ü Ä Ö Ü ß', {lowercase: false, separator: ' '}), 'ae oe ue Ae Oe Ue ss');
 });
 
+test('uppercase umlauts and ligatures stay one word', () => {
+	// Transliteration of one uppercase letter (`Ü` → `Ue`, `Æ` → `AE`) must not be read as camelCase.
+	assert.equal(slugify('MÜNCHEN'), 'muenchen');
+	assert.equal(slugify('ÜBER UNS'), 'ueber-uns');
+	assert.equal(slugify('GRÜNE ÄPFEL'), 'gruene-aepfel');
+	assert.equal(slugify('DIE GRÖSSTE'), 'die-groesste');
+	assert.equal(slugify('Ægir'), 'aegir');
+	assert.equal(slugify('Œuvre'), 'oeuvre');
+
+	// The same spellings in sentence case, and with decamelize turned off, already stayed whole.
+	assert.equal(slugify('München'), 'muenchen');
+	assert.equal(slugify('Über uns'), 'ueber-uns');
+	assert.equal(slugify('Äpfel'), 'aepfel');
+	assert.equal(slugify('MÜNCHEN', {decamelize: false}), 'muenchen');
+	assert.equal(slugify('Ægir', {decamelize: false}), 'aegir');
+	assert.equal(slugify('GRÜNE ÄPFEL', {decamelize: false}), 'gruene-aepfel');
+
+	// Case, separator, and locale still apply to the repaired word. Swedish `Ö` is `o`, not `oe`.
+	assert.equal(slugify('ÜBER UNS', {separator: '_'}), 'ueber_uns');
+	assert.equal(slugify('MÜNCHEN', {lowercase: false}), 'MUeNCHEN');
+	assert.equal(slugify('ÜBER UNS', {lowercase: false}), 'UeBER-UNS');
+	assert.equal(slugify('Ægir', {lowercase: false}), 'AEgir');
+	assert.equal(slugify('FÖN', {locale: 'de'}), 'foen');
+	assert.equal(slugify('FÖN', {locale: 'sv'}), 'fon');
+	assert.equal(slugify('ÆGIR', {locale: 'da'}), 'aegir');
+
+	// A real capital in the source still starts a word, including an all-caps tail and a following capital.
+	assert.equal(slugify('fooÜber'), 'foo-ueber');
+	assert.equal(slugify('fooÜBER'), 'foo-ueber');
+	assert.equal(slugify('fooÜBar'), 'foo-ue-bar');
+
+	// ASCII that only looks like those expansions is camelCase the caller wrote, so it still splits.
+	assert.equal(slugify('MUeNCHEN'), 'm-ue-nchen');
+	assert.equal(slugify('AEgir'), 'a-egir');
+
+	// An all-caps acronym stays one word when one of its letters expands (`Ж` → `Zh`).
+	assert.equal(slugify('ЖП'), 'zhp');
+
+	// Replacements run before decamelize, and a letter that transliterates to nothing must not change the join.
+	assert.equal(slugify('a', {customReplacements: [['a', 'fooBar']]}), 'foo-bar');
+	assert.equal(slugify('fooBar', {customReplacements: [['B', 'b']]}), 'foobar');
+	assert.equal(slugify('fooьBar'), 'foo-bar');
+	assert.equal(slugify('AьB'), 'ab');
+
+	// Whole-word locale rules are not per character; they keep their own transliteration.
+	assert.equal(slugify('България', {locale: 'bg'}), 'bulgaria');
+	assert.equal(slugify('София', {locale: 'bg'}), 'sofia');
+});
+
 test('supports Vietnamese', () => {
 	assert.equal(slugify('ố Ừ Đ', {lowercase: false, separator: ' '}), 'o U D');
 });
